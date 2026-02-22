@@ -1,0 +1,4 @@
+Radar-Only Model Results
+========================================
+Final Train Loss: 0.009358
+Final Val Loss: 0.014846

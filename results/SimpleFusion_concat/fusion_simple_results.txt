@@ -1,0 +1,5 @@
+Simple Fusion Model Results
+========================================
+Final Train Loss: 0.006389
+Final Val Loss: 0.010973
+Total Epochs: 50

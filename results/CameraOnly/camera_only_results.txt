@@ -1,0 +1,5 @@
+Camera-Only Model Results
+========================================
+Final Train Loss: 0.007559
+Final Val Loss: 0.011120
+Total Epochs: 50
