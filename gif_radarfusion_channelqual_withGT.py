@@ -233,41 +233,67 @@ def process_camera_sample(nusc, idx):
                 heatmap[j, i] = max(heatmap[j, i], np.exp(-dist / (2 * sigma**2)))
     
     return bev_map, heatmap
-
 def make_decision(heatmap, camera_quality_pred):
+    from scipy.ndimage import maximum_filter
+    
+    # Determine sensor trust based on quality
     if camera_quality_pred < 0.5:
         sensor_trust = "RADAR"
-        brake_threshold = 0.5
+        intensity_threshold = 0.3
     elif camera_quality_pred > 0.7:
         sensor_trust = "CAMERA"
-        brake_threshold = 0.7
+        intensity_threshold = 0.4
     else:
         sensor_trust = "BOTH"
-        brake_threshold = 0.6
+        intensity_threshold = 0.35
     
-    max_intensity = heatmap.max()
-    max_idx = heatmap.argmax()
-    row = max_idx // 128
-    col = max_idx % 128
+    # Find peaks
+    local_max = maximum_filter(heatmap, size=5) == heatmap
+    peaks = (heatmap > intensity_threshold) & local_max
+    peak_rows, peak_cols = np.where(peaks)
     
-    forward_dist = (64 - row) * (200 / 128)
+    # Build objects list
+    objects = []
+    for i in range(len(peak_rows)):
+        row = peak_rows[i]
+        col = peak_cols[i]
+        
+        distance_forward = (col - 64) * (200 / 128)
+        intensity = heatmap[row, col]
+        
+        if distance_forward > 0:
+            objects.append({
+                'row': row,
+                'col': col,
+                'distance': distance_forward,
+                'intensity': intensity
+            })
     
-    if max_intensity > brake_threshold and forward_dist > 1 and forward_dist < 20:
-        if forward_dist < 10:
+    # Sort by distance, then intensity
+    objects.sort(key=lambda x: (x['distance'], -x['intensity']))
+    
+    # Make decision
+    if len(objects) > 0:
+        closest = objects[0]
+        forward_dist = closest['distance']
+        max_intensity = closest['intensity']
+        
+        if forward_dist < 5 and max_intensity > intensity_threshold:
             action = "HARD_BRAKE"
             intensity = 100
-        else:
+        elif forward_dist < 15 and max_intensity > intensity_threshold * 0.8:
             action = "SOFT_BRAKE"
-            intensity = int((20 - forward_dist) / 20 * 100)
+            intensity = int((15 - forward_dist) / 15 * 100)
+        else:
+            action = "CONTINUE"
+            intensity = 0
+        
         reason = f"Obstacle at {forward_dist:.1f}m"
-    elif max_intensity > brake_threshold * 0.7 and forward_dist > 1 and forward_dist < 30:
-        action = "SLOW_DOWN"
-        intensity = 50
-        reason = "Caution: possible obstacle"
     else:
         action = "CONTINUE"
         intensity = 0
-        reason = "Path clear"
+        forward_dist = 100
+        reason = "No obstacles detected"
     
     return {
         'action': action,
@@ -336,7 +362,7 @@ while sample_token:
     scene_samples.append(sample)
     sample_token = sample['next']
 
-num_frames = min(10, len(scene_samples))
+num_frames = min(20, len(scene_samples))
 frames = []
 
 for frame_idx in range(num_frames):
@@ -363,13 +389,13 @@ for frame_idx in range(num_frames):
     camera_clean = camera_t
     cam_img_clean = cam_img.copy()
     
-    noise_medium = torch.randn_like(camera_t) * 5.0
+    noise_medium = torch.randn_like(camera_t) * 3.0
     camera_medium = torch.clamp(camera_t + noise_medium, 0, 1)
     cam_img_medium = np.array(cam_img)
     cam_img_medium = np.clip(cam_img_medium + np.random.randn(*cam_img_medium.shape) * 30, 0, 255).astype(np.uint8)
     cam_img_medium = Image.fromarray(cam_img_medium)
     
-    noise_heavy = torch.randn_like(camera_t) * 20.0
+    noise_heavy = torch.randn_like(camera_t) * 15.0
     camera_heavy = torch.clamp(camera_t + noise_heavy, 0, 1)
     cam_img_heavy = np.array(cam_img)
     cam_img_heavy = np.clip(cam_img_heavy + np.random.randn(*cam_img_heavy.shape) * 80, 0, 255).astype(np.uint8)
@@ -386,7 +412,7 @@ for frame_idx in range(num_frames):
     dec_heavy = make_decision(pred_heavy.cpu().numpy()[0, 0], qual_heavy.item())
     
     # Create 3x3 grid
-    fig = plt.figure(figsize=(18, 16))
+    fig = plt.figure(figsize=(18, 18))
     
     # Row 1: Camera images
     ax1 = plt.subplot(4, 3, 1)
@@ -412,12 +438,7 @@ for frame_idx in range(num_frames):
     ax4 = plt.subplot(4, 3, 4)
     ax4.imshow(pred_clean.cpu().numpy()[0, 0].T, cmap='jet', origin='lower', 
                extent=[-bev_range/2, bev_range/2, -bev_range/2, bev_range/2])  # ADD EXTENT
-    for box in boxes:
-        if abs(box['x']) < bev_range/2 and abs(box['y']) < bev_range/2:
-            rect = plt.Rectangle((box['y'] - box['w']/2, box['x'] - box['l']/2),
-                                 box['w'], box['l'], fill=False, 
-                                 edgecolor='magenta', linewidth=2)
-            ax4.add_patch(rect)
+   
     ax4.set_title('BEV Detection', fontsize=12)
     ax4.axis('off')
     
@@ -425,27 +446,68 @@ for frame_idx in range(num_frames):
     ax5 = plt.subplot(4, 3, 5)
     ax5.imshow(pred_medium.cpu().numpy()[0, 0].T, cmap='jet', origin='lower',
                extent=[-bev_range/2, bev_range/2, -bev_range/2, bev_range/2])  # ADD THIS
-    for box in boxes:
-        if abs(box['x']) < bev_range/2 and abs(box['y']) < bev_range/2:
-            rect = plt.Rectangle((box['y'] - box['w']/2, box['x'] - box['l']/2),
-                                 box['w'], box['l'], fill=False, 
-                                 edgecolor='magenta', linewidth=2)
-            ax5.add_patch(rect)
+   
     ax5.set_title('BEV Detection', fontsize=12)
     ax5.axis('off')
     
     ax6 = plt.subplot(4, 3, 6)
     ax6.imshow(pred_heavy.cpu().numpy()[0, 0].T, cmap='jet', origin='lower',
                extent=[-bev_range/2, bev_range/2, -bev_range/2, bev_range/2])  # ADD THIS
-    for box in boxes:
-        if abs(box['x']) < bev_range/2 and abs(box['y']) < bev_range/2:
-            rect = plt.Rectangle((box['y'] - box['w']/2, box['x'] - box['l']/2),
-                                 box['w'], box['l'], fill=False, 
-                                 edgecolor='magenta', linewidth=2)
-            ax6.add_patch(rect)
+  
     ax6.set_title('BEV Detection', fontsize=12)
     ax6.axis('off')
     
+    # After dec_clean, dec_medium, dec_heavy are computed:
+
+    # Visualize peaks on BEV heatmaps
+    from scipy.ndimage import maximum_filter
+    
+    for ax_idx, (heatmap, quality, ax) in enumerate([
+        (pred_clean.cpu().numpy()[0, 0], qual_clean.item(), ax4),
+        (pred_medium.cpu().numpy()[0, 0], qual_medium.item(), ax5),
+        (pred_heavy.cpu().numpy()[0, 0], qual_heavy.item(), ax6)
+    ]):
+        # Set threshold based on quality
+        if quality < 0.5:
+            intensity_threshold = 0.3
+        elif quality > 0.7:
+            intensity_threshold = 0.4
+        else:
+            intensity_threshold = 0.35
+        
+        # Find peaks
+        local_max = maximum_filter(heatmap, size=5) == heatmap
+        peaks = (heatmap > intensity_threshold) & local_max
+        peak_rows, peak_cols = np.where(peaks)
+        
+        # Build objects
+        objects = []
+        for i in range(len(peak_rows)):
+            row, col = peak_rows[i], peak_cols[i]
+            distance_forward = (col - 64) * (200 / 128)
+            if distance_forward > 0:
+                objects.append({
+                    'row': row, 'col': col,
+                    'distance': distance_forward,
+                    'intensity': heatmap[row, col]
+                })
+        
+        objects.sort(key=lambda x: (x['distance'], -x['intensity']))
+        
+        # Plot all peaks as green
+        for obj in objects:
+            lateral_m = (obj['row'] - 64) * (200/128)
+            forward_m = (obj['col'] - 64) * (200/128)
+            ax.plot(lateral_m, forward_m, 'go', markersize=8, markeredgecolor='white', markeredgewidth=2)
+        
+        # Mark closest in magenta with black border
+        if len(objects) > 0:
+            closest = objects[0]
+            lateral_m = (closest['row'] - 64) * (200/128)
+            forward_m = (closest['col'] - 64) * (200/128)
+            ax.plot(lateral_m, forward_m, 'mo', markersize=12, 
+                    markeredgecolor='black', markeredgewidth=3)
+        
     #Row 3 Decisions
     # Row 3: Decisions (positions 7, 8, 9)
     ax7 = plt.subplot(4, 3, 7)
@@ -489,12 +551,7 @@ for frame_idx in range(num_frames):
     ax10 = plt.subplot(4, 3, 10)
     ax10.imshow(camera_bev_gt.T, cmap='hot', origin='lower',
                 extent=[-bev_range/2, bev_range/2, -bev_range/2, bev_range/2])
-    for box in boxes:
-        if abs(box['x']) < bev_range/2 and abs(box['y']) < bev_range/2:
-            rect = plt.Rectangle((box['y'] - box['w']/2, box['x'] - box['l']/2),
-                                 box['w'], box['l'], fill=False, 
-                                 edgecolor='cyan', linewidth=2)
-            ax10.add_patch(rect)
+    
     ax10.set_title('Ground Truth: Camera BEV\n(LiDAR - dense coverage)', fontsize=11, weight='bold')
     ax10.set_xlabel('Y (lateral, m)', fontsize=9)
     ax10.set_ylabel('X (forward, m)', fontsize=9)
@@ -507,23 +564,19 @@ for frame_idx in range(num_frames):
     ax12 = plt.subplot(4, 3, 12)
     ax12.imshow(radar_bev.T, cmap='hot', origin='lower',
                 extent=[-bev_range/2, bev_range/2, -bev_range/2, bev_range/2])
-    for box in boxes:
-        if abs(box['x']) < bev_range/2 and abs(box['y']) < bev_range/2:
-            rect = plt.Rectangle((box['y'] - box['w']/2, box['x'] - box['l']/2),
-                                 box['w'], box['l'], fill=False, 
-                                 edgecolor='cyan', linewidth=2)
-            ax12.add_patch(rect)
+    
     ax12.set_title('Ground Truth: Radar BEV\n(sparse - gaps in coverage)', fontsize=11, weight='bold')
     ax12.set_xlabel('Y (lateral, m)', fontsize=9)
     ax12.set_ylabel('X (forward, m)', fontsize=9)
     
     plt.suptitle(f'Adaptive Sensor Fusion - Driving Scenario {frame_idx+1}/{num_frames}', 
-                 fontsize=18, weight='bold')
-    plt.tight_layout()
-    
+             fontsize=16, weight='bold', y=0.99)
+    #plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.98]) 
     # Save frame
     frame_path = f'results/temp_frame_{frame_idx:02d}.png'
-    plt.savefig(frame_path, dpi=100, bbox_inches='tight', facecolor='white')
+    #plt.savefig(frame_path, dpi=100, bbox_inches='tight', facecolor='white')
+    plt.savefig(frame_path, dpi=120, bbox_inches='tight', facecolor='white')
     plt.savefig(f'results/frame_{frame_idx:02d}_KEEP.png', dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
     

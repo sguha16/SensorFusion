@@ -627,59 +627,70 @@ with torch.no_grad():
 print("\n" + "="*50)
 
 def make_decision(heatmap, camera_quality_pred):
-    """
-    Make driving decision based on heatmap and predicted camera quality.
+    from scipy.ndimage import maximum_filter
     
-    Args:
-        heatmap: (128, 128) predicted object heatmap
-        camera_quality_pred: float (0-1), predicted camera quality
-    
-    Returns:
-        decision dict with action, confidence, reason
-    """
     # Determine sensor trust based on quality
-    if camera_quality_pred < 0.5:  # Camera is degraded
+    if camera_quality_pred < 0.5:
         sensor_trust = "RADAR"
-        brake_threshold = 0.5  # More conservative
-    elif camera_quality_pred > 0.7:  # Camera is good
+        intensity_threshold = 0.3  # More lenient for radar
+    elif camera_quality_pred > 0.7:
         sensor_trust = "CAMERA"
-        brake_threshold = 0.7  # Less conservative
-    else:  # Uncertain quality
+        intensity_threshold = 0.4  # Stricter for camera
+    else:
         sensor_trust = "BOTH"
-        brake_threshold = 0.6
+        intensity_threshold = 0.35  # Middle ground
     
-    # Analyze heatmap
-    max_intensity = heatmap.max()
+    # Find peaks using same logic as justcamera
+    local_max = maximum_filter(heatmap, size=5) == heatmap
+    peaks = (heatmap > intensity_threshold) & local_max
+    peak_rows, peak_cols = np.where(peaks)
     
-    # Find strongest detection location
-    max_idx = heatmap.argmax()
-    row = max_idx // 128
-    col = max_idx % 128
+    # Build objects list
+    objects = []
+    for i in range(len(peak_rows)):
+        row = peak_rows[i]
+        col = peak_cols[i]
+        
+        # Distance from ego (forward direction)
+        distance_forward = (col - 64) * (200 / 128)
+        
+        # Intensity (confidence)
+        intensity = heatmap[row, col]
+        
+        # Only consider objects in FRONT of vehicle
+        if distance_forward > 0:
+            objects.append({
+                'row': row,
+                'col': col,
+                'distance': distance_forward,
+                'intensity': intensity
+            })
     
-    # Convert to meters
-    forward_dist = (64 - row) * (200 / 128)
-    lateral_dist = (col - 64) * (200 / 128)
+    # Sort by distance first, then by intensity (descending) for ties
+    objects.sort(key=lambda x: (x['distance'], -x['intensity']))
     
-    # Decision logic
-    if max_intensity > brake_threshold and forward_dist > 1 and forward_dist < 20:
-        if forward_dist < 10:
+    # Make decision based on closest object
+    if len(objects) > 0:
+        closest = objects[0]
+        forward_dist = closest['distance']
+        max_intensity = closest['intensity']
+        
+        if forward_dist < 5 and max_intensity > intensity_threshold:
             action = "HARD_BRAKE"
             intensity = 100
-        else:
+        elif forward_dist < 15 and max_intensity > intensity_threshold * 0.8:
             action = "SOFT_BRAKE"
-            intensity = int((20 - forward_dist) / 20 * 100)
+            intensity = int((15 - forward_dist) / 15 * 100)
+        else:
+            action = "CONTINUE"
+            intensity = 0
         
-        reason = f"Obstacle at {forward_dist:.1f}m, trust={sensor_trust}"
-    
-    elif max_intensity > brake_threshold * 0.7 and forward_dist > 1 and forward_dist < 30:
-        action = "SLOW_DOWN"
-        intensity = 50
-        reason = f"Caution: possible obstacle at {forward_dist:.1f}m"
-    
+        reason = f"Obstacle at {forward_dist:.1f}m"
     else:
         action = "CONTINUE"
         intensity = 0
-        reason = "Path clear"
+        forward_dist = 100
+        reason = "No obstacles detected"
     
     return {
         'action': action,
@@ -687,9 +698,9 @@ def make_decision(heatmap, camera_quality_pred):
         'reason': reason,
         'sensor_trust': sensor_trust,
         'camera_quality': camera_quality_pred,
-        'obstacle_distance': forward_dist,
-        'max_heatmap': max_intensity
+        'obstacle_distance': forward_dist
     }
+    
 
 # Visualize what CNN learnt
 model.eval()
@@ -722,7 +733,62 @@ axes[1, 0].set_title('Ground Truth Heatmap')
 
 axes[1, 1].imshow(heat_pred_np.T, cmap='hot', origin='lower')
 axes[1, 1].set_title('Predicted Heatmap (Fusion)')
+#peaks
+# Add peak detection visualization on the predicted heatmap
+from scipy.ndimage import maximum_filter
 
+# Determine quality for threshold
+with torch.no_grad():
+    _, quality_pred = model(radar_sample, camera_sample)
+quality_val = quality_pred.item()
+
+# Set threshold based on quality
+if quality_val < 0.5:
+    intensity_threshold = 0.3
+elif quality_val > 0.7:
+    intensity_threshold = 0.4
+else:
+    intensity_threshold = 0.35
+
+# Find peaks
+local_max = maximum_filter(heat_pred_np, size=5) == heat_pred_np
+peaks = (heat_pred_np > intensity_threshold) & local_max
+peak_rows, peak_cols = np.where(peaks)
+
+# Build objects list
+objects = []
+for i in range(len(peak_rows)):
+    row = peak_rows[i]
+    col = peak_cols[i]
+    distance_forward = (col - 64) * (200 / 128)
+    intensity = heat_pred_np[row, col]
+    
+    if distance_forward > 0:
+        objects.append({
+            'row': row,
+            'col': col,
+            'distance': distance_forward,
+            'intensity': intensity
+        })
+
+# Sort by distance, then intensity
+objects.sort(key=lambda x: (x['distance'], -x['intensity']))
+
+# Plot all peaks as green dots
+for obj in objects:
+    axes[1, 1].plot(obj['row'], obj['col'], 'go', markersize=10, markeredgecolor='white', markeredgewidth=2)
+
+# Mark closest in RED
+if len(objects) > 0:
+    closest = objects[0]
+    axes[1, 1].plot(closest['row'], closest['col'], 'ro', markersize=15, 
+                    markeredgecolor='yellow', markeredgewidth=3)
+    axes[1, 1].text(closest['row']+3, closest['col'], 
+                    f"CLOSEST\n{closest['distance']:.1f}m", 
+                    color='yellow', fontsize=10, fontweight='bold')
+
+plt.tight_layout()
+plt.show()
 plt.tight_layout()
 plt.show()
 

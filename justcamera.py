@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sat Feb  7 12:29:20 2026
-
-@author: sanhi
-"""
-
-# -*- coding: utf-8 -*-
-"""
 Created on Thu Feb  5 09:38:40 2026
 
 @author: sanhi
@@ -209,6 +202,8 @@ plt.title("Heatmap + Boxes")
 plt.tight_layout()
 plt.show()
 
+
+
 #PREP FOR CNN
 #SPLIT DATA
 all_indices = list(range(len(nusc.sample)))
@@ -399,7 +394,7 @@ axes[2].set_title('Predicted Heatmap')
 
 plt.tight_layout()
 plt.savefig('results/camera_only_visualization.png', dpi=150, bbox_inches='tight')
-plt.show()
+
 #large loss gap between training and val loss= overfitting
 
 os.makedirs('results', exist_ok=True)
@@ -419,4 +414,64 @@ with open('results/camera_only_results.txt', 'w') as f:
 # Save visualization
 print("✓ Saved: results/camera_only_visualization.png")
 
-plt.show()
+##peaks on predicted heatmap from CNN
+# ========== TEST DECISION LOGIC ON TRAINED MODEL ==========
+from scipy.ndimage import maximum_filter
+
+# Find peaks in PREDICTED heatmap
+local_max = maximum_filter(heat_pred_np, size=5) == heat_pred_np
+peaks = (heat_pred_np > 0.3) & local_max
+peak_rows, peak_cols = np.where(peaks)
+
+# Build objects list
+objects = []
+for i in range(len(peak_rows)):
+    row = peak_rows[i]
+    col = peak_cols[i]
+    
+    # Distance from ego (forward direction)
+    distance_forward = (col - 64) * (200 / 128)
+    
+    # Intensity (confidence)
+    intensity = heat_pred_np[row, col]
+    
+    # Only consider objects in FRONT of vehicle
+    if distance_forward > 0:
+        objects.append({
+            'row': row,
+            'col': col,
+            'distance': distance_forward,
+            'intensity': intensity
+        })
+
+# Sort by distance (closest first)
+#objects.sort(key=lambda x: x['distance'])
+objects.sort(key=lambda x: (x['distance'], -x['intensity']))
+
+# Plot all peaks as green dots
+for obj in objects:
+    axes[2].plot(obj['row'], obj['col'], 'go', markersize=10, markeredgecolor='white', markeredgewidth=2)
+
+# Mark closest object in RED
+if len(objects) > 0:
+    closest = objects[0]
+    axes[2].plot(closest['row'], closest['col'], 'ro', markersize=15, 
+                 markeredgecolor='yellow', markeredgewidth=3)
+    axes[2].text(closest['row']+3, closest['col'], 
+                 f"CLOSEST\n{closest['distance']:.1f}m", 
+                 color='yellow', fontsize=10, fontweight='bold')
+    
+    # Make decision
+    if closest['distance'] < 5 and closest['intensity'] > 0.5:
+        decision = "HARD_BRAKE"
+    elif closest['distance'] < 15 and closest['intensity'] > 0.4:
+        decision = "SOFT_BRAKE"
+    else:
+        decision = "CONTINUE"
+    
+    print(f"Decision: {decision}")
+    print(f"Closest object at {closest['distance']:.1f}m, intensity {closest['intensity']:.2f}")
+else:
+    print("No objects detected ahead - CONTINUE")
+
+plt.show()  # AFTER everything is plotted
