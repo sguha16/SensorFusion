@@ -237,6 +237,8 @@ python justradar.py
 
 ### Quality Prediction Performance
 
+![Quality vs noise std dev](\results\Fusion_AttentionwithChannelQuality\quality_vs_noise_spectrum.png)
+
 | Noise Level (std) | Predicted Quality | Sensor Trust |
 |-------------------|-------------------|--------------|
 | 0                 | 1.000            | CAMERA       |
@@ -266,6 +268,8 @@ python justradar.py
 - Clean: Trust CAMERA, obstacle 20.3m → CONTINUE
 - Medium: Trust BOTH, obstacle 14.1m → SOFT_BRAKE 6%
 - Heavy: Trust RADAR, obstacle 17.2m → CONTINUE
+
+![Frame 1](results\Fusion_AttentionwithChannelQuality\GIF_Frames\frame_00_KEEP.png)
 
 ---
 
