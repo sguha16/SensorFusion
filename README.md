@@ -41,40 +41,7 @@ Implemented using the nuScenes mini dataset (404 samples).
 
 **Dual-Task CNN with Channel Attention:**
 
-Input: Radar BEV (128×128×1) + Camera BEV (128×128×1)
-                                            │
-                    ┌─────────────────┴─────────────────┐
-                    │                                              │
-         ┌──────────▼──────────┐           ┌───────────▼──────────┐
-         │  Radar Encoder      		  │           │  Camera Encoder             │
-         │   Conv → Pool       		  │           │   Conv → Pool               │
-         │   Conv → Pool       		  │           │   Conv → Pool               │
-         └──────────┬──────────┘           └───────────┬──────────┘
-                    │                                  │
-                    │                     ┌────────────┴────────────┐
-                    │                     │                                 │
-                    └──────────┬──────────┘              ┌──────────▼──────────┐
-                                                       		│  Quality Predictor  	    │
-                    ┌──────────▼──────────┐              │   Conv → Conv       		│
-                    │   Concatenation     		 │              │   Pool → FC         		│
-                    │    (64 channels)   		 │              │   Sigmoid         		│
-                    └──────────┬──────────┘              └──────────┬──────────┘
-                                  │                                    		   │
-                    ┌──────────▼──────────┐                         	   │
-                    │  Channel Attention  		 │                         	   │
-                    │  (learns to weight  		 │                         	   │
-                    │   sensor features)  		 │                         	   │
-                    └──────────┬──────────┘                         	   │
-                                  │                                    		   │
-                    ┌──────────▼──────────┐                         	   │
-                    │   Fusion Decoder    		 │                         	   │
-                    │ Upsample → Upsample 		 │                         	   │
-                    └──────────┬──────────┘                         	   │
-                               	  │                                  	       │
-                    ┌──────────▼──────────┐              ┌──────────▼──────────┐
-                    │   Output Heatmap    		 │              │  Quality Score      		 │
-                    │     (128×128)       		 │              │      (0-1)          		 │
-                    └─────────────────────┘              └─────────────────────┘
+![Architecture Diagram](architecture_diagram.png)
 
 **Components:**
 
